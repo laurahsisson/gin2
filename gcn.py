@@ -5,6 +5,60 @@ import activation
 import aggregate
 
 
+class GINConvBlock(torch.nn.Module):
+    def __init__(self, hidden_dim, act_fn, num_hidden_layers, do_conv_norm, dropout, do_residual):
+        """
+        A single convolution block containing GINConv, optional normalization, activation, dropout, and residual connection.
+
+        Args:
+            hidden_dim (int): Dimension of hidden layers.
+            act_fn (callable): Activation function.
+            num_hidden_layers (int): Number of hidden layers in the MLP of GINConv.
+            do_conv_norm (bool): Whether to apply normalization.
+            dropout (float): Dropout rate to apply.
+            do_residual (bool): Whether to apply residual connections.
+        """
+        super().__init__()
+
+        self.conv = pyg.nn.GINConv(
+            utils.build_layers(
+                in_dim=hidden_dim,
+                hidden_dim=hidden_dim,
+                out_dim=hidden_dim,
+                act_fn=act_fn,
+                num_hidden_layers=num_hidden_layers
+            )
+        )
+
+        self.norm = torch.nn.BatchNorm1d(hidden_dim) if do_conv_norm else None
+        self.act_fn = act_fn
+        self.dropout = torch.nn.Dropout(dropout)
+        self.do_residual = do_residual
+
+    def forward(self, x, edge_index, residual):
+        """
+        Forward pass for the convolution block.
+
+        Args:
+            x (torch.Tensor): Node features.
+            edge_index (torch.Tensor): Edge connectivity.
+            residual (torch.Tensor): Residual features to add.
+
+        Returns:
+            torch.Tensor: Updated node features.
+        """
+        x = self.conv(x, edge_index)
+        if self.norm:
+            x = self.norm(x)
+        x = self.act_fn()(x)
+        x = self.dropout(x)
+
+        if self.do_residual:
+            x = x + residual
+
+        return x
+
+
 class GCN(torch.nn.Module):
 
     def __init__(self, in_features, num_convs, num_mpnns, num_hidden_layers,
@@ -27,12 +81,9 @@ class GCN(torch.nn.Module):
         super().__init__()
 
         self.do_feature_norm = do_feature_norm
-        self.do_conv_norm = do_conv_norm
-        self.do_residual = do_residual
 
         # Activation function
         self.act_fn = activation.get_act_fn(act_mode)
-        self.num_convs = num_convs
 
         # Feature normalization
         if self.do_feature_norm:
@@ -46,26 +97,17 @@ class GCN(torch.nn.Module):
         )
 
         # GNN layers with hidden state normalization
-        self.convs = torch.nn.ModuleList([
-            pyg.nn.GINConv(
-                utils.build_layers(
-                    in_dim=hidden_dim,
-                    hidden_dim=hidden_dim,
-                    out_dim=hidden_dim,
-                    act_fn=self.act_fn,
-                    num_hidden_layers=num_hidden_layers
-                )
+        self.conv_blocks = torch.nn.ModuleList([
+            GINConvBlock(
+                hidden_dim=hidden_dim,
+                act_fn=self.act_fn,
+                num_hidden_layers=num_hidden_layers,
+                do_conv_norm=do_conv_norm,
+                dropout=dropout,
+                do_residual=do_residual
             ) for _ in range(num_mpnns)
         ])
-        
-        if self.do_conv_norm:
-            self.norms = torch.nn.ModuleList([
-                torch.nn.BatchNorm1d(hidden_dim) for _ in range(num_mpnns)
-            ])
 
-        self.dropout = torch.nn.Dropout(dropout)
-
-        # Readout layer
         self.readout = aggregate.BlendAggregator(
             do_two_stage,
             in_channels=hidden_dim,
@@ -74,37 +116,7 @@ class GCN(torch.nn.Module):
             dropout=dropout
         )
 
-        # Linear layer for note prediction
         self.notes_predictor = torch.nn.Linear(hidden_dim, notes_dim)
-
-    def do_conv(self, conv_idx, x, residual, graph):
-        """
-        Perform a single convolution block with residual connection.
-
-        Args:
-            conv_idx (int): Index of the current convolution block.
-            x (torch.Tensor): Node features.
-            residual (torch.Tensor): Residual features to add.
-            graph (torch_geometric.data.Data): Graph data containing edge indices.
-
-        Returns:
-            torch.Tensor, torch.Tensor: Updated features and residuals.
-        """
-        conv = self.convs[conv_idx]
-        norm = self.norms[conv_idx] if self.do_conv_norm else None
-
-        for _ in range(self.num_convs):
-            x = conv(x, graph.edge_index)
-            if norm:
-                x = norm(x)
-            x = self.act_fn()(x)
-            x = self.dropout(x)
-        
-        if self.do_residual:
-            x = x + residual
-            return x, x
-        
-        return x, None
 
     def forward(self, graph):
         """
@@ -127,8 +139,9 @@ class GCN(torch.nn.Module):
 
         # Residual connections and graph convolutions
         residual = x
-        for conv_idx in range(len(self.convs)):
-            x, residual = self.do_conv(conv_idx, x, residual, graph)
+        for conv_block in self.conv_blocks:
+            x = conv_block(x, graph.edge_index, residual)
+            residual = x
 
         # Save the embedding
         x = self.readout(x, graph)
