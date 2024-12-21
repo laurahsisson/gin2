@@ -123,7 +123,7 @@ def make_blend_dataset(pair_dataset,
         pair = (d["mol1"], d["mol2"])
         g1 = graph_data[d["mol1"]]
         g2 = graph_data[d["mol2"]]
-        pair_to_data[pair] = combine_graphs([g1, g2])
+        pair_to_data[pair] = BlendData.combine_graphs([g1, g2])
 
     valid_pairs = set(pair_to_data.keys()).intersection(
         set(all_multihots.keys()))
