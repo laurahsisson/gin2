@@ -1,6 +1,5 @@
 import torch_geometric as tg
 import torch
-import h5py
 import numpy as np
 from tqdm.notebook import tqdm
 import torch
@@ -136,4 +135,4 @@ def make_blend_dataset(pair_dataset,
             "notes": all_multihots[pair]
         })
 
-    return dataset
+    return np.array(dataset)
