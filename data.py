@@ -10,7 +10,7 @@ from torch_geometric.loader import DataLoader
 import numpy as np
 import data
 
-INDEX_KEYS = {"edge_index", "mol_batch", "blend_batch"}
+INDEX_KEYS = {"edge_index", 'edge_feat', 'node_feat'}
 
 def smiles2torch(smiles):
     graph = smiles2graph(smiles)
